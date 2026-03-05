@@ -1,0 +1,8 @@
+result
+.auth.json
+*.zip
+*.jar
+*.aot
+universe/
+backups/
+.hytale-downloader-credentials.json
