@@ -22,7 +22,7 @@ Add as a flake input in your NixOS configuration:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    hytale-server.url = "github:cognosco/hytale-server-nix";
+    hytale-server.url = "github:kaolin/hytale-server-nix";
   };
 
   outputs = { nixpkgs, hytale-server, ... }: {
