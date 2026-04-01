@@ -2,124 +2,35 @@
 
 NixOS module for running a [Hytale](https://hytale.com) dedicated server.
 
-There is no official Hytale server module in nixpkgs yet. This provides a
-`services.hytale-server` option set with systemd integration, firewall
-rules, and security hardening.
+Provides a `services.hytale-server` option set that gives you:
 
-## Quick Start (manual, no module)
+- **`hytale-server` command** on PATH -- handles java, JVM args, update staging, and restart loop
+- **systemd service** for headless operation with auto-restart on updates
+- **Update integrity checking** -- validates Assets.zip before applying staged updates
+- **Firewall rules** -- auto-opens UDP port
 
-```bash
-cd ~/hytale/raw
-nix-shell -p jdk25
-cd Server
-java -Xms4G -Xmx4G --enable-native-access=ALL-UNNAMED -jar HytaleServer.jar --assets ../Assets.zip --backup --backup-dir backups --backup-frequency 30
-```
+## Quick start
 
-Run it in a tmux session so it survives SSH disconnects:
+### 1. Download server files
 
 ```bash
-tmux new -s hytale
-# run the above, then Ctrl-b d to detach
-# tmux attach -t hytale to reattach
+mkdir -p ~/hytale && cd ~/hytale
+# Get the downloader from https://support.hytale.com/hc/en-us/articles/45326769420827
+./hytale-downloader-linux-amd64
+unzip *.zip   # creates Server/ and Assets.zip
 ```
 
-## Server Auth
-
-On first boot the server has no credentials. In the server console:
-
-1. `/auth login device` -- gives you a URL + code
-2. Open the URL in a browser, enter the code
-3. `/auth persistence` -- **important!** switches from `Memory` to `Encrypted` so tokens persist across reboots
-4. `/auth status` -- verify it shows `Encrypted` store
-
-Without step 3, you have to re-auth every time you restart.
-
-## Admin / Operator
-
-From the server console:
-
-```
-/op add <username>       # make someone an op
-/op remove <username>    # remove op
-```
-
-Note: `/op self` only works from in-game, not the console.
-
-## Password
-
-Set in `Server/config.json`:
-
-```json
-"Password": "yourpassword"
-```
-
-Requires a server restart. Players are prompted to enter it on connect.
-Set to `""` to disable.
-
-## Whitelist
-
-All from console or in-game as op, takes effect immediately:
-
-```
-whitelist enable             # only listed players + ops can join
-whitelist disable            # anyone can join
-whitelist add <username>     # allow a player (by username, not UUID)
-whitelist remove <username>  # revoke
-```
-
-Ops bypass the whitelist automatically.
-
-## World Transfer
-
-Singleplayer saves are at:
-- **Windows**: `%appdata%\Hytale\UserData\Saves\`
-- **macOS**: `~/Library/Application Support/Hytale/UserData/Saves/`
-- **Linux**: `~/.local/share/Hytale/UserData/Saves/`
-
-Each save has a `universe/` folder. Copy it into your server's working
-directory (`Server/universe/`). Player inventory is per-universe, stored
-in `universe/players/`.
-
-If the server says "failed to find instance" and generates a fresh world,
-also copy the top-level `permissions.json`, `bans.json`, and
-`whitelist.json` from the save into `Server/`.
-
-## Multiple Worlds
-
-Hytale supports multiple worlds in one universe under
-`universe/worlds/<name>/`. However, player data is shared across all
-worlds in the same universe (inventory carries over). If you want
-separate inventories, run separate server instances with different
-`--universe` paths and different ports (`--bind 0.0.0.0:5521`).
-
-Useful commands:
-
-```
-/world add <name>            # create a new world
-/tp world <name>             # teleport to another world
-```
-
-## Networking
-
-Hytale uses **UDP port 5520** (QUIC protocol) by default. Make sure your
-firewall opens UDP, not TCP.
-
-On NixOS, add to your firewall config:
-
-```nix
-networking.firewall.allowedUDPPorts = [ 5520 ];
-```
-
-## NixOS Module Usage
-
-Add as a flake input:
+### 2. Add to your NixOS flake
 
 ```nix
 # flake.nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    hytale-server.url = "github:kaolin/hytale-server-nix";
+    hytale-server = {
+      url = "github:kaolin/hytale-server-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { nixpkgs, hytale-server, ... }: {
@@ -133,25 +44,98 @@ Add as a flake input:
 }
 ```
 
-Then in your configuration:
+### 3. Configure
 
 ```nix
+# configuration.nix
 services.hytale-server = {
   enable = true;
-  serverJar = "/path/to/Server/HytaleServer.jar";
-  assetsZip = "/path/to/Assets.zip";
+  dataDir = "/home/you/hytale";  # directory containing Assets.zip and Server/
 };
 ```
 
-## Module Options
+### 4. Rebuild and run
+
+```bash
+sudo nixos-rebuild switch
+
+# Interactive (console access for /op, /update, etc.)
+tmux new -s hytale
+hytale-server
+
+# Or headless via systemd
+sudo systemctl start hytale-server
+```
+
+## Directory layout
+
+The module expects the standard Hytale layout:
+
+```
+dataDir/
+  Assets.zip                    # game assets
+  updater/staging/              # server stages updates here
+  updater/backup/               # pre-update backups (created automatically)
+  Server/
+    HytaleServer.jar            # server binary
+    config.json                 # server config
+    universe/                   # worlds and player data
+    backups/                    # periodic world backups
+```
+
+## Updating
+
+From the server console:
+
+```
+/update download        # download latest version
+/update apply --confirm # apply and restart
+/update status          # check update state
+```
+
+The wrapper script applies staged updates on restart and validates
+Assets.zip integrity before replacing it. If a staged Assets.zip is
+corrupt, the current version is kept and a warning is logged.
+
+To re-download everything manually:
+
+```bash
+cd ~/hytale
+./hytale-downloader-linux-amd64
+```
+
+## Interactive vs systemd
+
+**Interactive** (`hytale-server` in tmux) gives you console access for
+commands like `/op`, `/update`, `/auth`. The script handles the update
+restart loop.
+
+**Systemd** (`systemctl start hytale-server`) runs headless. Updates
+are applied via `preStart` on restart. Exit code 8 triggers automatic
+restart. View logs with `journalctl -u hytale-server -f`.
+
+To disable auto-start on boot (interactive-only):
+
+```nix
+systemd.services.hytale-server.wantedBy = lib.mkForce [];
+```
+
+## First-time auth
+
+On first boot, run these in the server console:
+
+1. `/auth login device` -- gives you a URL + code
+2. Open the URL in a browser, enter the code
+3. `/auth persistence` -- switches to encrypted storage (persists across restarts)
+4. `/auth status` -- verify it shows `Encrypted`
+
+## Module options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enable` | `false` | Enable the Hytale server service |
-| `serverJar` | -- | Path to `HytaleServer.jar` |
-| `assetsZip` | -- | Path to `Assets.zip` |
-| `package` | `pkgs.jdk25_headless` | Java package |
-| `dataDir` | `/var/lib/hytale-server` | State directory (worlds, config, backups) |
+| `enable` | `false` | Enable the Hytale server |
+| `dataDir` | `/var/lib/hytale-server` | Top-level directory (contains Assets.zip + Server/) |
+| `package` | `pkgs.jdk25_headless` | Java package (requires 25+) |
 | `bind` | `0.0.0.0:5520` | Bind address and UDP port |
 | `openFirewall` | `true` | Auto-open UDP port |
 | `jvmOpts` | `-Xms4G -Xmx4G` | JVM memory/GC flags |
@@ -160,9 +144,7 @@ services.hytale-server = {
 | `backup.maxCount` | `5` | Max backups retained |
 | `extraArgs` | `[]` | Extra args to `HytaleServer.jar` |
 
-## Requirements
+## Networking
 
-- NixOS with flakes enabled (for the module), or just `nix-shell -p jdk25` for manual use
-- Hytale server files (`HytaleServer.jar` + `Assets.zip`) -- download with
-  the [Hytale Downloader CLI](https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual)
-- Java 25+ (provided automatically)
+Hytale uses **UDP port 5520** (QUIC protocol). Make sure your firewall
+opens UDP, not TCP.
